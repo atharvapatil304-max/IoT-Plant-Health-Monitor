@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Smart Plant AI Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<style>
+
+body{
+margin:0;
+font-family:'Segoe UI',sans-serif;
+background:linear-gradient(-45deg,#0ea5e9,#6366f1,#22c55e,#f59e0b);
+background-size:400% 400%;
+animation:gradientBG 10s ease infinite;
+color:white;
+}
+
+@keyframes gradientBG{
+0%{background-position:0% 50%;}
+50%{background-position:100% 50%;}
+100%{background-position:0% 50%;}
+}
+
+header{
+padding:20px;
+text-align:center;
+font-size:30px;
+font-weight:bold;
+}
+
+.container{
+max-width:1200px;
+margin:auto;
+padding:20px;
+}
+
+.grid{
+display:grid;
+grid-template-columns:1fr 1fr;
+gap:20px;
+}
+
+.card{
+background:white;
+color:#111;
+padding:20px;
+border-radius:20px;
+margin-bottom:20px;
+box-shadow:0 10px 30px rgba(0,0,0,0.3);
+}
+
+.section-title{
+font-weight:bold;
+font-size:20px;
+margin-bottom:15px;
+}
+
+.progress{
+width:100%;
+height:22px;
+background:#e5e7eb;
+border-radius:12px;
+margin-bottom:15px;
+}
+
+.bar{
+height:100%;
+border-radius:12px;
+text-align:center;
+color:white;
+font-size:12px;
+line-height:22px;
+background:#3b82f6;
+}
+
+.health-circle{
+width:180px;
+height:180px;
+border-radius:50%;
+margin:auto;
+display:flex;
+align-items:center;
+justify-content:center;
+font-size:30px;
+font-weight:bold;
+background:conic-gradient(#22c55e 0deg,#e5e7eb 0deg);
+}
+
+.alert-box{
+padding:12px;
+border-radius:10px;
+background:#fee2e2;
+color:#b91c1c;
+font-weight:bold;
+}
+
+button{
+padding:8px 16px;
+border:none;
+border-radius:10px;
+background:#3b82f6;
+color:white;
+margin:5px;
+cursor:pointer;
+}
+
+input{
+padding:8px;
+width:60%;
+border-radius:8px;
+border:1px solid #ccc;
+}
+
+.camera-box img{
+width:100%;
+border-radius:15px;
+box-shadow:0 8px 20px rgba(0,0,0,0.4);
+}
+
+.device-status{
+font-weight:bold;
+margin-top:10px;
+}
+
+.online{color:#16a34a;}
+.offline{color:#ef4444;}
+
+</style>
+</head>
+
+<body>
+
+<header>🌿 Smart Plant AI Monitor</header>
+
+<div class="container">
+
+<div class="card">
+
+<div class="section-title">Plant Configuration</div>
+
+<input type="text" id="plantInput" placeholder="Enter Plant Name">
+<button onclick="savePlant()">Save</button>
+
+<p id="plantDisplay"></p>
+
+<div id="deviceStatus" class="device-status offline">
+🔴 Device Offline
+</div>
+
+</div>
+
+<div class="grid">
+
+<div class="card">
+<div class="section-title">Overall Health</div>
+<div class="health-circle" id="healthCircle">--%</div>
+</div>
+
+<div class="card">
+<div class="section-title">AI Diagnosis</div>
+<h2 id="aiStatus">Status: --</h2>
+<div id="alertBox"></div>
+</div>
+
+</div>
+
+<div class="card">
+
+<div class="section-title">Live Sensor Data</div>
+
+<p>Soil Moisture</p>
+<div class="progress"><div id="soilBar" class="bar"></div></div>
+
+<p>Temperature</p>
+<div class="progress"><div id="tempBar" class="bar"></div></div>
+
+<p>Humidity</p>
+<div class="progress"><div id="humBar" class="bar"></div></div>
+
+<p>Light Intensity</p>
+<div class="progress"><div id="lightBar" class="bar"></div></div>
+
+<p>Gas Exposure Index</p>
+<div class="progress"><div id="gasBar" class="bar"></div></div>
+
+</div>
+
+<div class="card camera-box">
+
+<div class="section-title">Live Plant Camera</div>
+
+<button onclick="startCamera()">Start Camera</button>
+<button onclick="stopCamera()">Stop Camera</button>
+
+<br><br>
+
+<img id="cameraStream">
+
+</div>
+
+</div>
+
+<script>
+
+// CONFIG
+const SUPABASE_URL="https://kziugyrbulnpxrnhhdzy.supabase.co";
+const SUPABASE_KEY="sb_publishable_4M_diVKEhW6oBLcovtk3kA_9Htdwj2M";
+const DEVICE_ID="ESP32_001";
+
+const supabaseClient = supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+let cameraIP="";
+let cameraRunning=false;
+let lastDataTime=0;
+
+
+// DEVICE STATUS
+
+function deviceOnline(){
+document.getElementById("deviceStatus").innerText="🟢 Device Online";
+document.getElementById("deviceStatus").className="device-status online";
+}
+
+function deviceOffline(){
+document.getElementById("deviceStatus").innerText="🔴 Device Offline";
+document.getElementById("deviceStatus").className="device-status offline";
+}
+
+setInterval(()=>{
+if(Date.now()-lastDataTime>10000){
+deviceOffline();
+}
+},1000);
+
+
+// GET CAMERA IP
+
+async function getCameraIP(){
+
+const {data}=await supabaseClient
+.from("camera")
+.select("ip")
+.eq("id",1)
+.single();
+
+if(data){
+cameraIP="http://"+data.ip;
+}
+
+}
+
+
+// START CAMERA (FORCE NEW STREAM)
+
+async function startCamera(){
+
+await getCameraIP();
+
+const img=document.getElementById("cameraStream");
+
+img.src="";
+
+setTimeout(()=>{
+img.src=cameraIP+"/stream?t="+Date.now();
+cameraRunning=true;
+},200);
+
+}
+
+
+// STOP CAMERA
+
+function stopCamera(){
+
+const img=document.getElementById("cameraStream");
+
+img.src="";
+cameraRunning=false;
+
+}
+
+
+// AUTO RECONNECT STREAM
+
+document.getElementById("cameraStream").onerror=function(){
+
+if(!cameraRunning) return;
+
+setTimeout(()=>{
+startCamera();
+},2000);
+
+};
+
+
+// SAVE PLANT
+
+async function savePlant(){
+
+const name=document.getElementById("plantInput").value;
+
+await supabaseClient
+.from("plant_config")
+.upsert({device_id:DEVICE_ID,plant_name:name});
+
+document.getElementById("plantDisplay").innerText="Plant: "+name;
+
+}
+
+
+// LOAD PLANT
+
+async function loadPlant(){
+
+const {data}=await supabaseClient
+.from("plant_config")
+.select("*")
+.eq("device_id",DEVICE_ID)
+.limit(1);
+
+if(data && data.length>0){
+document.getElementById("plantDisplay").innerText="Plant: "+data[0].plant_name;
+}
+
+}
+
+loadPlant();
+
+
+// SENSOR BAR
+
+function setBar(id,value,max){
+
+const bar=document.getElementById(id);
+
+const percent=Math.min(100,(value/max)*100);
+
+bar.style.width=percent+"%";
+bar.innerText=value;
+
+}
+
+
+// HEALTH
+
+function updateHealth(score,status){
+
+const circle=document.getElementById("healthCircle");
+
+circle.innerText=score+"%";
+
+let color="#22c55e";
+
+if(status==="LOW") color="#f59e0b";
+if(status==="RISKY") color="#ef4444";
+if(status==="CRITICAL") color="#7f1d1d";
+
+circle.style.background=`conic-gradient(${color} ${score*3.6}deg,#e5e7eb ${score*3.6}deg)`;
+
+}
+
+
+// DASHBOARD UPDATE
+
+function updateDashboard(d){
+
+lastDataTime=Date.now();
+deviceOnline();
+
+setBar("soilBar",d.soil_raw,4095);
+setBar("tempBar",d.temp,100);
+setBar("humBar",d.humidity,100);
+setBar("lightBar",d.light_raw,4095);
+setBar("gasBar",d.gei,4095);
+
+document.getElementById("aiStatus").innerText="Status: "+d.ai_status;
+
+if(d.alert_reason){
+document.getElementById("alertBox").innerHTML=
+`<div class="alert-box">${d.alert_reason}</div>`;
+}else{
+document.getElementById("alertBox").innerHTML="";
+}
+
+updateHealth(d.health_score || 50,d.ai_status);
+
+}
+
+
+// INITIAL DATA
+
+async function loadInitialData(){
+
+const {data}=await supabaseClient
+.from("plant_devices")
+.select("*")
+.eq("device_id",DEVICE_ID)
+.order("created_at",{ascending:false})
+.limit(1);
+
+if(data && data.length>0){
+updateDashboard(data[0]);
+}
+
+}
+
+loadInitialData();
+
+
+// REALTIME SENSOR UPDATE
+
+supabaseClient
+.channel("plant_updates")
+.on(
+"postgres_changes",
+{event:"INSERT",schema:"public",table:"plant_devices"},
+(payload)=>{
+
+const d=payload.new;
+
+if(d.device_id!==DEVICE_ID) return;
+
+updateDashboard(d);
+
+})
+.subscribe();
+
+</script>
+
+</body>
+</html>

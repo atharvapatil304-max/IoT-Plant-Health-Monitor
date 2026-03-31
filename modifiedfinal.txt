@@ -1,0 +1,256 @@
+// ================= FINAL SMART PLANT MONITOR (STABLE LCD) =================
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Preferences.h>
+#include <HTTPClient.h>
+#include <DHT.h>
+#include <LiquidCrystal_I2C.h>
+
+// ---------------- PINS ----------------
+#define SOIL_PIN 33
+#define LIGHT_PIN 34
+#define MQ2_PIN 32
+#define DHTPIN 4
+#define DHTTYPE DHT11
+#define BUZZER_PIN 27
+#define RESET_BUTTON 0
+
+// ---------------- SUPABASE ----------------
+#define SUPABASE_URL "https://ypmsjlgyfhvvwnjazmnk.supabase.co/rest/v1/plant_devices"
+#define SUPABASE_KEY "sb_publishable_li475zB_rb4H1Eus8q6o8A_vDiNo1bo"
+
+// ---------------- OBJECTS ----------------
+WebServer server(80);
+Preferences prefs;
+DHT dht(DHTPIN, DHTTYPE);
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+String ssid = "";
+String pass = "";
+
+// ---------------- TIMERS ----------------
+unsigned long wifiLostTime = 0;
+unsigned long lastReconnect = 0;
+unsigned long lastSensorRead = 0;
+unsigned long buttonPressTime = 0;
+unsigned long lastBeep = 0;
+
+bool wifiLost = false;
+bool buttonHeld = false;
+bool buzzerState = false;
+bool wifiDisplayed = false;
+bool wifiErrorDisplayed = false;
+
+const unsigned long WIFI_TIMEOUT = 60000;
+const unsigned long RECONNECT_INTERVAL = 10000;
+const unsigned long SENSOR_INTERVAL = 5000;
+
+// ---------------- LCD FUNCTION ----------------
+void lcdShow(String line1, String line2){
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print(line1.substring(0,16));
+  lcd.setCursor(0,1);
+  lcd.print(line2.substring(0,16));
+}
+
+// ---------------- BUZZER BLINK ----------------
+void buzzerBlink(unsigned long now){
+  if(now - lastBeep > 500){
+    buzzerState = !buzzerState;
+    digitalWrite(BUZZER_PIN, buzzerState);
+    lastBeep = now;
+  }
+}
+
+// ---------------- START AP ----------------
+void startAP(){
+  WiFi.mode(WIFI_AP_STA);
+  WiFi.softAP("PlantSetup");
+
+  server.on("/", [](){
+    server.send(200,"text/html",
+      "<h2>WiFi Setup</h2>"
+      "<form action='/save'>"
+      "SSID:<input name='s'><br><br>"
+      "Password:<input name='p'><br><br>"
+      "<input type='submit'></form>");
+  });
+
+  server.on("/save", [](){
+    prefs.begin("wifi", false);
+    prefs.putString("ssid", server.arg("s"));
+    prefs.putString("pass", server.arg("p"));
+    prefs.end();
+    ESP.restart();
+  });
+
+  server.on("/wifi", [](){
+    String json="{";
+    json+="\"ssid\":\""+ssid+"\",";
+    json+="\"pass\":\""+pass+"\"";
+    json+="}";
+    server.send(200,"application/json",json);
+  });
+  server.begin();
+}
+
+// ---------------- CONNECT WIFI ----------------
+void connectWiFi(){
+
+  prefs.begin("wifi", true);
+  ssid = prefs.getString("ssid", "");
+  pass = prefs.getString("pass", "");
+  prefs.end();
+
+  startAP();
+
+  if(ssid != ""){
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    lcdShow("Connecting WiFi","Please Wait");
+
+    server.on("/wifi", [](){
+    String json="{";
+    json+="\"ssid\":\""+ssid+"\",";
+    json+="\"pass\":\""+pass+"\"";
+    json+="}";
+    server.send(200,"application/json",json);
+  });
+  server.begin();
+
+  } else {
+    startAP();
+  }
+}
+
+// ---------------- RESET BUTTON ----------------
+void checkReset(unsigned long now){
+
+  if(digitalRead(RESET_BUTTON) == LOW){
+
+    if(!buttonHeld){
+      buttonHeld = true;
+      buttonPressTime = now;
+      lcdShow("Hold Button","For AP Mode");
+    }
+
+    if(now - buttonPressTime > 3000){
+      lcdShow("Resetting WiFi","Starting AP");
+
+      prefs.begin("wifi", false);
+      prefs.clear();
+      prefs.end();
+
+      delay(2000);
+      ESP.restart();
+    }
+
+  } else {
+    buttonHeld = false;
+  }
+}
+
+// ---------------- UPLOAD DATA ----------------
+void uploadRaw(int soil, int light, float temp, float hum, int gas){
+
+  HTTPClient http;
+  http.begin(SUPABASE_URL);
+
+  http.addHeader("Content-Type","application/json");
+  http.addHeader("apikey",SUPABASE_KEY);
+  http.addHeader("Authorization","Bearer " SUPABASE_KEY);
+
+  String body="{";
+  body+="\"device_id\":\"ESP32_001\",";
+  body+="\"soil_raw\":"+String(soil)+",";
+  body+="\"light_raw\":"+String(light)+",";
+  body+="\"temp\":"+String(temp)+",";
+  body+="\"humidity\":"+String(hum)+",";
+  body+="\"gei\":"+String(gas);
+  body+="}";
+
+  http.POST(body);
+  http.end();
+}
+
+// ---------------- SETUP ----------------
+void setup(){
+
+  Serial.begin(115200);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+
+  lcd.init();
+  lcd.backlight();
+
+  dht.begin();
+
+  connectWiFi();
+}
+
+// ---------------- LOOP ----------------
+void loop(){
+
+  unsigned long now = millis();
+
+  server.handleClient();
+  checkReset(now);
+
+  // -------- WIFI MONITOR --------
+  if(WiFi.status() != WL_CONNECTED){
+
+    wifiDisplayed = false;
+
+    if(!wifiLost){
+      wifiLost = true;
+      wifiLostTime = now;
+      wifiErrorDisplayed = false;
+    }
+
+    if(now - lastReconnect > RECONNECT_INTERVAL){
+      WiFi.disconnect();
+      WiFi.begin(ssid.c_str(), pass.c_str());
+      lastReconnect = now;
+      lcdShow("Reconnecting WiFi","Please Wait");
+    }
+
+    if(now - wifiLostTime > WIFI_TIMEOUT){
+
+      if(!wifiErrorDisplayed){
+        lcdShow("WiFi Error","Check Router");
+        wifiErrorDisplayed = true;
+      }
+
+      buzzerBlink(now);
+    }
+
+    return;
+  }
+
+  wifiLost = false;
+  wifiErrorDisplayed = false;
+  digitalWrite(BUZZER_PIN, LOW);
+
+  if(!wifiDisplayed){
+    lcdShow("WiFi Connected","System Running");
+    wifiDisplayed = true;
+  }
+
+  // -------- SENSOR READ --------
+  if(now - lastSensorRead > SENSOR_INTERVAL){
+
+    int soil = analogRead(SOIL_PIN);
+    int light = analogRead(LIGHT_PIN);
+    int gas = analogRead(MQ2_PIN);
+    float temp = dht.readTemperature();
+    float hum = dht.readHumidity();
+
+    uploadRaw(soil, light, temp, hum, gas);
+
+    lastSensorRead = now;
+  }
+}
